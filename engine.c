@@ -59,9 +59,54 @@ void init(State *state)
     state->boardLayout.boardSize = squareSize;
 }
 
+static void screenToBoardCoordinates(State *state, int screenX, int screenY, int *boardX, int *boardY)
+{
+    // Calculate which intersection is closest to the click
+    int closestX = (screenX - state->boardLayout.gridX + state->boardLayout.cellSpacing / 2) / state->boardLayout.cellSpacing;
+    int closestY = (screenY - state->boardLayout.gridY + state->boardLayout.cellSpacing / 2) / state->boardLayout.cellSpacing;
+    
+    // Check if the click is within the stone hitbox around the intersection
+    int intersectionScreenX = state->boardLayout.gridX + closestX * state->boardLayout.cellSpacing;
+    int intersectionScreenY = state->boardLayout.gridY + closestY * state->boardLayout.cellSpacing;
+    
+    int stoneRadius = state->boardLayout.cellSpacing / 2 - 2; // Slightly smaller than half cell spacing
+    int dx = screenX - intersectionScreenX;
+    int dy = screenY - intersectionScreenY;
+    
+    if (dx * dx + dy * dy <= stoneRadius * stoneRadius) {
+        *boardX = closestX;
+        *boardY = closestY;
+    } else {
+        *boardX = -1;
+        *boardY = -1;
+    }
+
+    if (*boardX < 0 || *boardX >= BOARD_SIZE || *boardY < 0 || *boardY >= BOARD_SIZE)
+    {
+        *boardX = -1;
+        *boardY = -1;
+    }
+}
+
 void doSimulation(State *state)
 {
     state->simulationStep++;
+
+    // Handle input 
+    if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
+    {
+        int x = GetMouseX();
+        int y = GetMouseY();
+
+        int boardX, boardY;
+        screenToBoardCoordinates(state, x, y, &boardX, &boardY);
+        if (boardX != -1 && boardY != -1)
+        {
+            BOARD_SET(state, boardX, boardY, CELL_BLACK);
+        }
+    }
+
+    // Handle game logic 
 }
 
 static void drawBoard(State *state)
