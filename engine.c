@@ -34,6 +34,29 @@ void init(State *state)
     }
 
     SetTargetFPS(60);
+
+
+    // Get current window dimensions (handles resize)
+    int windowWidth = GetScreenWidth();
+    int windowHeight = GetScreenHeight();
+
+    // Calculate the biggest square that fits with padding on all sides
+    int availableWidth = windowWidth - 2 * BOARD_PADDING;
+    int availableHeight = windowHeight - 2 * BOARD_PADDING;
+    int squareSize = fmax(0, fmin(availableWidth, availableHeight));
+
+    // Calculate grid area with padding inside the board
+    int x = (windowWidth - squareSize) / 2;
+    int y = (windowHeight - squareSize) / 2;
+    int gridX = x + GRID_PADDING;
+    int gridY = y + GRID_PADDING;
+    int gridSize = squareSize - 2 * GRID_PADDING;
+
+    state->boardLayout.gridX = gridX;
+    state->boardLayout.gridY = gridY;
+    state->boardLayout.gridSize = gridSize;
+    state->boardLayout.cellSpacing = gridSize / (BOARD_SIZE - 1);
+    state->boardLayout.boardSize = squareSize;
 }
 
 void doSimulation(State *state)
@@ -43,6 +66,7 @@ void doSimulation(State *state)
 
 static void drawBoard(State *state)
 {
+
     // Get current window dimensions (handles resize)
     int windowWidth = GetScreenWidth();
     int windowHeight = GetScreenHeight();
@@ -56,27 +80,22 @@ static void drawBoard(State *state)
     int y = (windowHeight - squareSize) / 2;
     DrawRectangle(x, y, squareSize, squareSize, GoBoardColor);
 
-    // Calculate grid area with padding inside the board
-    int gridX = x + GRID_PADDING;
-    int gridY = y + GRID_PADDING;
-    int gridSize = squareSize - 2 * GRID_PADDING;
-
     // Draw grid lines
-    DrawLineEx((Vector2){gridX, gridY}, (Vector2){gridX + gridSize, gridY}, LINE_THICKNESS, GridLineOverlayColor);
-    DrawLineEx((Vector2){gridX, gridY}, (Vector2){gridX, gridY + gridSize}, LINE_THICKNESS, GridLineOverlayColor);
-    DrawLineEx((Vector2){gridX + gridSize, gridY}, (Vector2){gridX + gridSize, gridY + gridSize}, LINE_THICKNESS, GridLineOverlayColor);
-    DrawLineEx((Vector2){gridX, gridY + gridSize}, (Vector2){gridX + gridSize, gridY + gridSize}, LINE_THICKNESS, GridLineOverlayColor);
+    DrawLineEx((Vector2){state->boardLayout.gridX, state->boardLayout.gridY}, (Vector2){state->boardLayout.gridX + state->boardLayout.gridSize, state->boardLayout.gridY}, LINE_THICKNESS, GridLineOverlayColor);
+    DrawLineEx((Vector2){state->boardLayout.gridX, state->boardLayout.gridY}, (Vector2){state->boardLayout.gridX, state->boardLayout.gridY + state->boardLayout.gridSize}, LINE_THICKNESS, GridLineOverlayColor);
+    DrawLineEx((Vector2){state->boardLayout.gridX + state->boardLayout.gridSize, state->boardLayout.gridY}, (Vector2){state->boardLayout.gridX + state->boardLayout.gridSize, state->boardLayout.gridY + state->boardLayout.gridSize}, LINE_THICKNESS, GridLineOverlayColor);
+    DrawLineEx((Vector2){state->boardLayout.gridX, state->boardLayout.gridY + state->boardLayout.gridSize}, (Vector2){state->boardLayout.gridX + state->boardLayout.gridSize, state->boardLayout.gridY + state->boardLayout.gridSize}, LINE_THICKNESS, GridLineOverlayColor);
 
     // Draw vertical lines
     for (int i = 0; i < BOARD_SIZE; i++)
     {
-        DrawLineEx((Vector2){gridX + i * gridSize / (BOARD_SIZE - 1), gridY}, (Vector2){gridX + i * gridSize / (BOARD_SIZE - 1), gridY + gridSize}, LINE_THICKNESS, GridLineOverlayColor);
+        DrawLineEx((Vector2){state->boardLayout.gridX + i * state->boardLayout.cellSpacing, state->boardLayout.gridY}, (Vector2){state->boardLayout.gridX + i * state->boardLayout.cellSpacing, state->boardLayout.gridY + state->boardLayout.gridSize}, LINE_THICKNESS, GridLineOverlayColor);
     }
 
     // Draw horizontal lines
     for (int i = 0; i < BOARD_SIZE; i++)
     {
-        DrawLineEx((Vector2){gridX, gridY + i * gridSize / (BOARD_SIZE - 1)}, (Vector2){gridX + gridSize, gridY + i * gridSize / (BOARD_SIZE - 1)}, LINE_THICKNESS, GridLineOverlayColor);
+        DrawLineEx((Vector2){state->boardLayout.gridX, state->boardLayout.gridY + i * state->boardLayout.cellSpacing}, (Vector2){state->boardLayout.gridX + state->boardLayout.gridSize, state->boardLayout.gridY + i * state->boardLayout.cellSpacing}, LINE_THICKNESS, GridLineOverlayColor);
     }
 
     // Draw Go stones
@@ -96,7 +115,7 @@ static void drawBoard(State *state)
 
             if (color != NULL)
             {
-                DrawCircle(gridX + x * gridSize / (BOARD_SIZE - 1), gridY + y * gridSize / (BOARD_SIZE - 1), STONE_RADIUS, *color);
+                DrawCircle(state->boardLayout.gridX + x * state->boardLayout.cellSpacing, state->boardLayout.gridY + y * state->boardLayout.cellSpacing, STONE_RADIUS, *color);
             }
         }
     }
