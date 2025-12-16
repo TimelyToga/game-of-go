@@ -7,12 +7,34 @@
 
 State *createState(void)
 {
-    State *state = malloc(sizeof(State));
+    State *state = calloc(1, sizeof(State));
     state->windowWidth = 800;
     state->windowHeight = 600;
 
     return state;
 }
+
+static void addAction(State *state, int x, int y, CellState cellState)
+{
+    BOARD_SET(state, x, y, cellState);
+    state->actions[state->actionCount].x = x;
+    state->actions[state->actionCount].y = y;
+    state->actions[state->actionCount].cellState = cellState;
+    state->actionCount++;
+}
+
+// Returns true if there is a last action, false otherwise
+static bool getLastAction(State *state, Action *action)
+{
+    if (state->actionCount > 0)
+    {
+        *action = state->actions[state->actionCount - 1];
+        return true;
+    }
+
+    return false;
+}
+
 void init(State *state)
 {
     SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_MSAA_4X_HINT | FLAG_WINDOW_HIGHDPI);
@@ -23,14 +45,14 @@ void init(State *state)
     {
         int x = rand() % BOARD_SIZE;
         int y = rand() % BOARD_SIZE;
-        BOARD_SET(state, x, y, CELL_BLACK);
+        addAction(state, x, y, CELL_BLACK);
     }
 
     for (int i = 0; i < 10; i++)
     {
         int x = rand() % BOARD_SIZE;
         int y = rand() % BOARD_SIZE;
-        BOARD_SET(state, x, y, CELL_WHITE);
+        addAction(state, x, y, CELL_WHITE);
     }
 
     SetTargetFPS(60);
@@ -93,20 +115,26 @@ void doSimulation(State *state)
     state->simulationStep++;
 
     // Handle input 
+    int boardX = -1, boardY = -1;
     if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
     {
         int x = GetMouseX();
         int y = GetMouseY();
 
-        int boardX, boardY;
         screenToBoardCoordinates(state, x, y, &boardX, &boardY);
-        if (boardX != -1 && boardY != -1)
+    }
+    
+    // Handle game logic 
+    if (boardX != -1 && boardY != -1)
+    {
+        // Color 
+        Action lastAction = {0};
+        if (getLastAction(state, &lastAction))
         {
-            BOARD_SET(state, boardX, boardY, CELL_BLACK);
+            CellState nextCellState = lastAction.cellState == CELL_BLACK ? CELL_WHITE : CELL_BLACK;
+            addAction(state, boardX, boardY, nextCellState);
         }
     }
-
-    // Handle game logic 
 }
 
 static void drawBoard(State *state)

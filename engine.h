@@ -26,11 +26,19 @@ typedef struct {
 } BoardLayout;
 
 typedef struct {
+  int x;
+  int y;
+  CellState cellState;
+} Action;
+
+typedef struct {
   int windowWidth;
   int windowHeight;
   uint64_t simulationStep;
 
   CellState board[BOARD_SIZE * BOARD_SIZE];
+  Action actions[BOARD_SIZE * BOARD_SIZE];
+  int actionCount;
 
   BoardLayout boardLayout;
 } State;
