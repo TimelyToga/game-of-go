@@ -7,6 +7,8 @@
 
 #define BOARD_SIZE 9
 
+#define NUM_CELLS BOARD_SIZE *BOARD_SIZE
+
 #define BOARD_GET(state, x, y) ((state)->board[(y) * BOARD_SIZE + (x)])
 #define BOARD_SET(state, x, y, val) \
   ((state)->board[(y) * BOARD_SIZE + (x)] = (val))
@@ -36,8 +38,8 @@ typedef struct {
   int windowHeight;
   uint64_t simulationStep;
 
-  CellState board[BOARD_SIZE * BOARD_SIZE];
-  Action actions[BOARD_SIZE * BOARD_SIZE];
+  CellState board[NUM_CELLS];
+  Action actions[NUM_CELLS];
   int actionCount;
 
   BoardLayout boardLayout;
@@ -48,4 +50,14 @@ State *createState(void);
 void init(State *state);
 void doSimulation(State *state);
 void draw(State *state);
+
+// shouldRemoveStones takes in a board, scratchpad, and target location. It
+// returns true if any stones will be removed They will be marked in the
+// scratchpad.
+bool shouldRemoveStones(State *state, CellState scratchpad[NUM_CELLS],
+                        int targetX, int targetY);
+
+// removeStones just applies the removal of stones from scratpad to board if
+// necessary
+void removeStones(State *state, CellState scratpad[NUM_CELLS]);
 #endif

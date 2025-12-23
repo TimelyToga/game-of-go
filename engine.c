@@ -131,8 +131,12 @@ void doSimulation(State *state)
         Action lastAction = {0};
         if (getLastAction(state, &lastAction))
         {
+            // TODO: Check for illegal moves (suicide, ko etc)
+            
             CellState nextCellState = lastAction.cellState == CELL_BLACK ? CELL_WHITE : CELL_BLACK;
             addAction(state, boardX, boardY, nextCellState);
+
+            // TODO: Check if we should remove stones
         }
     }
 }
@@ -201,4 +205,36 @@ void draw(State *state)
     drawBoard(state);
     DrawText(TextFormat("Simulation Step: %llu", (unsigned long long)state->simulationStep), 10, 10, 20, BLACK);
     EndDrawing();
+}
+
+static uint countLiberties(State *state, int x, int y) {
+    // TODO: Implement
+}
+
+static uint floodFill(State *state, CellState scratchpad[NUM_CELLS], int x, int y)
+{ 
+    // TODO: Implement
+}
+
+bool shouldRemoveStones(State *state,
+                        CellState scratchpad[NUM_CELLS], int targetX,
+                        int targetY)
+{
+    CellState actingColor = CELL_BLACK;
+    Action action = {0};
+    if (getLastAction(state, &action)) {
+        if(action.cellState == CELL_BLACK) {
+            actingColor = CELL_WHITE;
+        }
+    }
+
+    // Now we need 
+    return false;
+}
+
+// removeStones just applies the removal of stones from scratpad to board if
+// necessary
+void removeStones(State *state, CellState scratpad[NUM_CELLS])
+{
+    return;
 }
