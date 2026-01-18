@@ -3,7 +3,11 @@
 #include <stdint.h>
 #include <math.h>
 #include <stdlib.h>
+#include <string.h>
 #include "renderer.h"
+
+static unsigned int countLiberties(State *state, int x, int y);
+static unsigned int floodFill(State *state, CellState scratchpad[NUM_CELLS], int x, int y);
 
 State *createState(void)
 {
@@ -12,6 +16,11 @@ State *createState(void)
     state->windowHeight = 600;
 
     return state;
+}
+
+static bool isInBounds(int x, int y)
+{
+    return x >= 0 && x < BOARD_SIZE && y >= 0 && y < BOARD_SIZE;
 }
 
 static void addAction(State *state, int x, int y, CellState cellState)
@@ -127,17 +136,47 @@ void doSimulation(State *state)
     // Handle game logic 
     if (boardX != -1 && boardY != -1)
     {
-        // Color 
+        CellState nextCellState = CELL_BLACK;
         Action lastAction = {0};
         if (getLastAction(state, &lastAction))
         {
-            // TODO: Check for illegal moves (suicide, ko etc)
-            
-            CellState nextCellState = lastAction.cellState == CELL_BLACK ? CELL_WHITE : CELL_BLACK;
-            addAction(state, boardX, boardY, nextCellState);
-
-            // TODO: Check if we should remove stones
+            nextCellState = lastAction.cellState == CELL_BLACK ? CELL_WHITE : CELL_BLACK;
         }
+
+        if (BOARD_GET(state, boardX, boardY) != CELL_EMPTY)
+        {
+            return;
+        }
+
+        CellState boardBeforeMove[NUM_CELLS];
+        memcpy(boardBeforeMove, state->board, sizeof(state->board));
+
+        BOARD_SET(state, boardX, boardY, nextCellState);
+
+        CellState scratchpad[NUM_CELLS];
+        memset(scratchpad, 0, sizeof(scratchpad));
+        bool shouldRemove = shouldRemoveStones(state, scratchpad, boardX, boardY);
+        if (shouldRemove)
+        {
+            removeStones(state, scratchpad);
+        }
+
+        if (countLiberties(state, boardX, boardY) == 0)
+        {
+            memcpy(state->board, boardBeforeMove, sizeof(state->board));
+            return;
+        }
+
+        if (state->hasKoBoard &&
+            memcmp(state->board, state->koBoard, sizeof(state->board)) == 0)
+        {
+            memcpy(state->board, boardBeforeMove, sizeof(state->board));
+            return;
+        }
+
+        memcpy(state->koBoard, boardBeforeMove, sizeof(state->board));
+        state->hasKoBoard = true;
+        addAction(state, boardX, boardY, nextCellState);
     }
 }
 
@@ -207,34 +246,199 @@ void draw(State *state)
     EndDrawing();
 }
 
-static uint countLiberties(State *state, int x, int y) {
-    // TODO: Implement
+static unsigned int countLiberties(State *state, int x, int y) {
+    if (!isInBounds(x, y))
+    {
+        return 0;
+    }
+
+    CellState color = BOARD_GET(state, x, y);
+    if (color == CELL_EMPTY)
+    {
+        return 0;
+    }
+
+    bool visited[NUM_CELLS] = {0};
+    bool libertySeen[NUM_CELLS] = {0};
+    int stackX[NUM_CELLS];
+    int stackY[NUM_CELLS];
+    int stackSize = 0;
+
+    int startIndex = y * BOARD_SIZE + x;
+    visited[startIndex] = true;
+    stackX[stackSize] = x;
+    stackY[stackSize] = y;
+    stackSize++;
+
+    unsigned int liberties = 0;
+    while (stackSize > 0)
+    {
+        stackSize--;
+        int cx = stackX[stackSize];
+        int cy = stackY[stackSize];
+
+        const int offsets[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+        for (int i = 0; i < 4; i++)
+        {
+            int nx = cx + offsets[i][0];
+            int ny = cy + offsets[i][1];
+            if (!isInBounds(nx, ny))
+            {
+                continue;
+            }
+
+            int nIndex = ny * BOARD_SIZE + nx;
+            CellState neighbor = BOARD_GET(state, nx, ny);
+            if (neighbor == CELL_EMPTY)
+            {
+                if (!libertySeen[nIndex])
+                {
+                    libertySeen[nIndex] = true;
+                    liberties++;
+                }
+                continue;
+            }
+
+            if (neighbor != color || visited[nIndex])
+            {
+                continue;
+            }
+
+            visited[nIndex] = true;
+            stackX[stackSize] = nx;
+            stackY[stackSize] = ny;
+            stackSize++;
+        }
+    }
+
+    return liberties;
 }
 
-static uint floodFill(State *state, CellState scratchpad[NUM_CELLS], int x, int y)
+static unsigned int floodFill(State *state, CellState scratchpad[NUM_CELLS], int x, int y)
 { 
-    // TODO: Implement
+    if (!isInBounds(x, y))
+    {
+        return 0;
+    }
+
+    CellState color = BOARD_GET(state, x, y);
+    if (color == CELL_EMPTY)
+    {
+        return 0;
+    }
+
+    int startIndex = y * BOARD_SIZE + x;
+    if (scratchpad[startIndex] == color)
+    {
+        return 0;
+    }
+
+    bool visited[NUM_CELLS] = {0};
+    int stackX[NUM_CELLS];
+    int stackY[NUM_CELLS];
+    int stackSize = 0;
+
+    visited[startIndex] = true;
+    stackX[stackSize] = x;
+    stackY[stackSize] = y;
+    stackSize++;
+
+    unsigned int filled = 0;
+    while (stackSize > 0)
+    {
+        stackSize--;
+        int cx = stackX[stackSize];
+        int cy = stackY[stackSize];
+        int cIndex = cy * BOARD_SIZE + cx;
+
+        scratchpad[cIndex] = color;
+        filled++;
+
+        const int offsets[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+        for (int i = 0; i < 4; i++)
+        {
+            int nx = cx + offsets[i][0];
+            int ny = cy + offsets[i][1];
+            if (!isInBounds(nx, ny))
+            {
+                continue;
+            }
+
+            int nIndex = ny * BOARD_SIZE + nx;
+            if (visited[nIndex])
+            {
+                continue;
+            }
+
+            if (BOARD_GET(state, nx, ny) != color)
+            {
+                continue;
+            }
+
+            visited[nIndex] = true;
+            stackX[stackSize] = nx;
+            stackY[stackSize] = ny;
+            stackSize++;
+        }
+    }
+
+    return filled;
 }
 
 bool shouldRemoveStones(State *state,
                         CellState scratchpad[NUM_CELLS], int targetX,
                         int targetY)
 {
-    CellState actingColor = CELL_BLACK;
-    Action action = {0};
-    if (getLastAction(state, &action)) {
-        if(action.cellState == CELL_BLACK) {
-            actingColor = CELL_WHITE;
+    if (!isInBounds(targetX, targetY))
+    {
+        return false;
+    }
+
+    CellState actingColor = BOARD_GET(state, targetX, targetY);
+    if (actingColor == CELL_EMPTY)
+    {
+        return false;
+    }
+
+    CellState opponentColor = actingColor == CELL_BLACK ? CELL_WHITE : CELL_BLACK;
+    bool removed = false;
+    const int offsets[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+
+    for (int i = 0; i < 4; i++)
+    {
+        int nx = targetX + offsets[i][0];
+        int ny = targetY + offsets[i][1];
+        if (!isInBounds(nx, ny))
+        {
+            continue;
+        }
+
+        if (BOARD_GET(state, nx, ny) != opponentColor)
+        {
+            continue;
+        }
+
+        if (countLiberties(state, nx, ny) == 0)
+        {
+            if (floodFill(state, scratchpad, nx, ny) > 0)
+            {
+                removed = true;
+            }
         }
     }
 
-    // Now we need 
-    return false;
+    return removed;
 }
 
 // removeStones just applies the removal of stones from scratpad to board if
 // necessary
 void removeStones(State *state, CellState scratpad[NUM_CELLS])
 {
-    return;
+    for (int i = 0; i < NUM_CELLS; i++)
+    {
+        if (scratpad[i] != CELL_EMPTY)
+        {
+            state->board[i] = CELL_EMPTY;
+        }
+    }
 }

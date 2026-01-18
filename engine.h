@@ -39,6 +39,8 @@ typedef struct {
   uint64_t simulationStep;
 
   CellState board[NUM_CELLS];
+  CellState koBoard[NUM_CELLS];
+  bool hasKoBoard;
   Action actions[NUM_CELLS];
   int actionCount;
 
