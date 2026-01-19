@@ -6,14 +6,16 @@
 
 #include "raylib.h"
 
-#define BOARD_SIZE 9
+#define BOARD_MAX_SIZE 19
 
-#define NUM_CELLS BOARD_SIZE *BOARD_SIZE
+#define NUM_CELLS BOARD_MAX_SIZE *BOARD_MAX_SIZE
 #define MAX_ACTIONS 512
+#define MAX_SAVE_ENTRIES 64
 
-#define BOARD_GET(state, x, y) ((state)->board[(y) * BOARD_SIZE + (x)])
+#define BOARD_INDEX(x, y) ((y) * BOARD_MAX_SIZE + (x))
+#define BOARD_GET(state, x, y) ((state)->board[BOARD_INDEX((x), (y))])
 #define BOARD_SET(state, x, y, val) \
-  ((state)->board[(y) * BOARD_SIZE + (x)] = (val))
+  ((state)->board[BOARD_INDEX((x), (y))] = (val))
 
 typedef enum {
   CELL_EMPTY,
@@ -37,10 +39,19 @@ typedef struct {
 } Action;
 
 typedef struct {
+  char path[256];
+  char name[128];
+  uint64_t mtime;
+} SaveEntry;
+
+typedef struct {
   int windowWidth;
   int windowHeight;
   uint64_t simulationStep;
 
+  int boardSize;
+  int selectedBoardSizeIndex;
+  bool inNewGameMenu;
   CellState board[NUM_CELLS];
   CellState koBoard[NUM_CELLS];
   bool hasKoBoard;
@@ -57,6 +68,13 @@ typedef struct {
   int reviewIndex;
   Font uiFont;
   bool hasCustomFont;
+  char savePath[256];
+  uint64_t gameStartTimestamp;
+  bool autoSaveEnabled;
+  bool savePickerActive;
+  int savePickerCount;
+  int savePickerSelected;
+  SaveEntry saveEntries[MAX_SAVE_ENTRIES];
 
   BoardLayout boardLayout;
 } State;

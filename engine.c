@@ -6,9 +6,17 @@
 #include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
+#include <dirent.h>
+#include <sys/stat.h>
+#include <time.h>
 #include "renderer.h"
 
-static const char *DEFAULT_SAVE_PATH = "game.sgf";
+static const char *SAVE_DIR = "games";
+static const int kBoardSizes[] = {9, 13, 19};
+static const int kBoardSizeCount = 3;
+static const int HUD_PANEL_WIDTH = 320;
+static const int HUD_PANEL_HEIGHT = 220;
+static const int HUD_PANEL_MARGIN = 12;
 
 static unsigned int countLiberties(State *state, int x, int y);
 static unsigned int floodFill(State *state, CellState scratchpad[NUM_CELLS], int x, int y);
@@ -17,6 +25,7 @@ static CellState getNextPlayer(State *state);
 static bool applyMove(State *state, int x, int y, CellState player, bool isPass);
 static void recordHistory(State *state);
 static void resetGame(State *state);
+static void startNewGame(State *state, int boardSize);
 static void undoMove(State *state);
 static void drawHud(State *state);
 static Font loadUIFont(bool *hasCustomFont);
@@ -24,6 +33,16 @@ static bool saveGame(const State *state, const char *path);
 static bool loadGame(State *state, const char *path);
 static void formatCoord(char *out, size_t outSize, int x, int y);
 static void drawGhostStone(State *state);
+static void drawMenu(State *state);
+static void drawSavePicker(State *state);
+static bool ensureSaveDirectory(void);
+static void generateSavePath(State *state);
+static float stoneRadius(const State *state);
+static int boardSizeIndexFor(int size);
+static void openSavePicker(State *state);
+static void closeSavePicker(State *state);
+static void refreshSavePicker(State *state);
+static int compareSaveEntries(const void *a, const void *b);
 
 State *createState(void)
 {
@@ -34,9 +53,9 @@ State *createState(void)
     return state;
 }
 
-static bool isInBounds(int x, int y)
+static bool isInBounds(const State *state, int x, int y)
 {
-    return x >= 0 && x < BOARD_SIZE && y >= 0 && y < BOARD_SIZE;
+    return x >= 0 && x < state->boardSize && y >= 0 && y < state->boardSize;
 }
 
 // Returns true if there is a last action, false otherwise
@@ -58,6 +77,11 @@ void init(State *state)
 
     SetTargetFPS(60);
 
+    state->selectedBoardSizeIndex = 0;
+    state->boardSize = kBoardSizes[state->selectedBoardSizeIndex];
+    state->inNewGameMenu = true;
+    state->autoSaveEnabled = true;
+    state->savePath[0] = '\0';
     resetGame(state);
     updateBoardLayout(state);
     state->uiFont = loadUIFont(&state->hasCustomFont);
@@ -73,19 +97,42 @@ static void updateBoardLayout(State *state)
     int availableWidth = windowWidth - 2 * BOARD_PADDING;
     int availableHeight = windowHeight - 2 * BOARD_PADDING;
     int squareSize = fmax(0, fmin(availableWidth, availableHeight));
+    int sizeWithRightHud = fmin(availableHeight, availableWidth - HUD_PANEL_WIDTH - HUD_PANEL_MARGIN);
+    int sizeWithBottomHud = fmin(availableWidth, availableHeight - HUD_PANEL_HEIGHT - HUD_PANEL_MARGIN);
 
-    // Calculate grid area with padding inside the board
-    int x = (windowWidth - squareSize) / 2;
-    int y = (windowHeight - squareSize) / 2;
+    if (sizeWithRightHud > 0 || sizeWithBottomHud > 0)
+    {
+        squareSize = fmax(sizeWithRightHud, sizeWithBottomHud);
+    }
+
+    if (squareSize < 0)
+    {
+        squareSize = 0;
+    }
+
+    int gridSizeRaw = squareSize - 2 * GRID_PADDING;
+    if (gridSizeRaw < 0)
+    {
+        gridSizeRaw = 0;
+    }
+    int cellSpacing = state->boardSize > 1 ? gridSizeRaw / (state->boardSize - 1) : gridSizeRaw;
+    if (cellSpacing < 1)
+    {
+        cellSpacing = 1;
+    }
+    int gridSize = cellSpacing * (state->boardSize - 1);
+    int boardSizePx = gridSize + 2 * GRID_PADDING;
+
+    int x = (windowWidth - boardSizePx) / 2;
+    int y = (windowHeight - boardSizePx) / 2;
     int gridX = x + GRID_PADDING;
     int gridY = y + GRID_PADDING;
-    int gridSize = squareSize - 2 * GRID_PADDING;
 
     state->boardLayout.gridX = gridX;
     state->boardLayout.gridY = gridY;
     state->boardLayout.gridSize = gridSize;
-    state->boardLayout.cellSpacing = gridSize / (BOARD_SIZE - 1);
-    state->boardLayout.boardSize = squareSize;
+    state->boardLayout.cellSpacing = cellSpacing;
+    state->boardLayout.boardSize = boardSizePx;
 }
 
 static void screenToBoardCoordinates(State *state, int screenX, int screenY, int *boardX, int *boardY)
@@ -98,11 +145,11 @@ static void screenToBoardCoordinates(State *state, int screenX, int screenY, int
     int intersectionScreenX = state->boardLayout.gridX + closestX * state->boardLayout.cellSpacing;
     int intersectionScreenY = state->boardLayout.gridY + closestY * state->boardLayout.cellSpacing;
     
-    int stoneRadius = state->boardLayout.cellSpacing / 2 - 2; // Slightly smaller than half cell spacing
+    int hitRadius = (int)stoneRadius(state); // Slightly smaller than half cell spacing
     int dx = screenX - intersectionScreenX;
     int dy = screenY - intersectionScreenY;
     
-    if (dx * dx + dy * dy <= stoneRadius * stoneRadius) {
+    if (dx * dx + dy * dy <= hitRadius * hitRadius) {
         *boardX = closestX;
         *boardY = closestY;
     } else {
@@ -110,7 +157,7 @@ static void screenToBoardCoordinates(State *state, int screenX, int screenY, int
         *boardY = -1;
     }
 
-    if (*boardX < 0 || *boardX >= BOARD_SIZE || *boardY < 0 || *boardY >= BOARD_SIZE)
+    if (*boardX < 0 || *boardX >= state->boardSize || *boardY < 0 || *boardY >= state->boardSize)
     {
         *boardX = -1;
         *boardY = -1;
@@ -145,6 +192,51 @@ static void resetGame(State *state)
     recordHistory(state);
 }
 
+static bool ensureSaveDirectory(void)
+{
+    struct stat st = {0};
+    if (stat(SAVE_DIR, &st) == 0)
+    {
+        return S_ISDIR(st.st_mode);
+    }
+
+#if defined(_WIN32)
+    return _mkdir(SAVE_DIR) == 0;
+#else
+    return mkdir(SAVE_DIR, 0755) == 0;
+#endif
+}
+
+static void generateSavePath(State *state)
+{
+    time_t now = time(NULL);
+    struct tm *local = localtime(&now);
+    char timestamp[64];
+    if (local)
+    {
+        strftime(timestamp, sizeof(timestamp), "%Y-%m-%d_%H-%M-%S", local);
+    }
+    else
+    {
+        snprintf(timestamp, sizeof(timestamp), "unknown-time");
+    }
+
+    snprintf(state->savePath, sizeof(state->savePath), "%s/%s.sgf", SAVE_DIR, timestamp);
+    state->gameStartTimestamp = (uint64_t)now;
+}
+
+static void startNewGame(State *state, int boardSize)
+{
+    state->boardSize = boardSize;
+    state->selectedBoardSizeIndex = boardSizeIndexFor(boardSize);
+    resetGame(state);
+    generateSavePath(state);
+    ensureSaveDirectory();
+    saveGame(state, state->savePath);
+    state->inNewGameMenu = false;
+    updateBoardLayout(state);
+}
+
 static void undoMove(State *state)
 {
     if (state->actionCount <= 0)
@@ -162,6 +254,11 @@ static void undoMove(State *state)
     if (state->reviewIndex > state->actionCount)
     {
         state->reviewIndex = state->actionCount;
+    }
+
+    if (state->autoSaveEnabled && state->savePath[0] != '\0')
+    {
+        saveGame(state, state->savePath);
     }
 }
 
@@ -193,6 +290,11 @@ static bool recordAction(State *state, int x, int y, CellState cellState, bool i
     if (!state->reviewMode)
     {
         state->reviewIndex = state->actionCount;
+    }
+
+    if (state->autoSaveEnabled && state->savePath[0] != '\0')
+    {
+        saveGame(state, state->savePath);
     }
 
     return true;
@@ -227,7 +329,7 @@ static bool applyMove(State *state, int x, int y, CellState player, bool isPass)
         return true;
     }
 
-    if (!isInBounds(x, y) || BOARD_GET(state, x, y) != CELL_EMPTY)
+    if (!isInBounds(state, x, y) || BOARD_GET(state, x, y) != CELL_EMPTY)
     {
         return false;
     }
@@ -306,6 +408,86 @@ void doSimulation(State *state)
     state->simulationStep++;
     updateBoardLayout(state);
 
+    if (state->savePickerActive)
+    {
+        if (IsKeyPressed(KEY_ESCAPE))
+        {
+            closeSavePicker(state);
+        }
+        if (IsKeyPressed(KEY_DOWN))
+        {
+            if (state->savePickerSelected + 1 < state->savePickerCount)
+            {
+                state->savePickerSelected++;
+            }
+        }
+        if (IsKeyPressed(KEY_UP))
+        {
+            if (state->savePickerSelected > 0)
+            {
+                state->savePickerSelected--;
+            }
+        }
+        if ((IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER)) && state->savePickerCount > 0)
+        {
+            SaveEntry entry = state->saveEntries[state->savePickerSelected];
+            loadGame(state, entry.path);
+            closeSavePicker(state);
+        }
+        return;
+    }
+
+    if (state->inNewGameMenu)
+    {
+        if (IsKeyPressed(KEY_LEFT))
+        {
+            state->selectedBoardSizeIndex = (state->selectedBoardSizeIndex + kBoardSizeCount - 1) % kBoardSizeCount;
+            state->boardSize = kBoardSizes[state->selectedBoardSizeIndex];
+            updateBoardLayout(state);
+        }
+        if (IsKeyPressed(KEY_RIGHT))
+        {
+            state->selectedBoardSizeIndex = (state->selectedBoardSizeIndex + 1) % kBoardSizeCount;
+            state->boardSize = kBoardSizes[state->selectedBoardSizeIndex];
+            updateBoardLayout(state);
+        }
+        if (IsKeyPressed(KEY_ONE))
+        {
+            state->selectedBoardSizeIndex = 0;
+            state->boardSize = kBoardSizes[state->selectedBoardSizeIndex];
+            updateBoardLayout(state);
+        }
+        if (IsKeyPressed(KEY_TWO))
+        {
+            state->selectedBoardSizeIndex = 1;
+            state->boardSize = kBoardSizes[state->selectedBoardSizeIndex];
+            updateBoardLayout(state);
+        }
+        if (IsKeyPressed(KEY_THREE))
+        {
+            state->selectedBoardSizeIndex = 2;
+            state->boardSize = kBoardSizes[state->selectedBoardSizeIndex];
+            updateBoardLayout(state);
+        }
+        if (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER))
+        {
+            startNewGame(state, kBoardSizes[state->selectedBoardSizeIndex]);
+        }
+        if (IsKeyPressed(KEY_L))
+        {
+            openSavePicker(state);
+        }
+        return;
+    }
+
+    if (IsKeyPressed(KEY_N))
+    {
+        state->inNewGameMenu = true;
+        state->reviewMode = false;
+        state->reviewIndex = state->actionCount;
+        return;
+    }
+
     if (IsKeyPressed(KEY_R))
     {
         state->reviewMode = !state->reviewMode;
@@ -324,14 +506,9 @@ void doSimulation(State *state)
         }
     }
 
-    if (IsKeyPressed(KEY_S))
-    {
-        saveGame(state, DEFAULT_SAVE_PATH);
-    }
-
     if (IsKeyPressed(KEY_L))
     {
-        loadGame(state, DEFAULT_SAVE_PATH);
+        openSavePicker(state);
     }
 
     if (!state->reviewMode && IsKeyPressed(KEY_U))
@@ -368,7 +545,7 @@ void doSimulation(State *state)
 
 static CellState boardAt(const CellState *board, int x, int y)
 {
-    return board[y * BOARD_SIZE + x];
+    return board[BOARD_INDEX(x, y)];
 }
 
 static void drawBoard(State *state, const CellState *board)
@@ -377,28 +554,23 @@ static void drawBoard(State *state, const CellState *board)
     int y = state->boardLayout.gridY - GRID_PADDING;
     DrawRectangle(x, y, state->boardLayout.boardSize, state->boardLayout.boardSize, GoBoardColor);
 
-    // Draw grid lines
-    DrawLineEx((Vector2){state->boardLayout.gridX, state->boardLayout.gridY}, (Vector2){state->boardLayout.gridX + state->boardLayout.gridSize, state->boardLayout.gridY}, LINE_THICKNESS, GridLineOverlayColor);
-    DrawLineEx((Vector2){state->boardLayout.gridX, state->boardLayout.gridY}, (Vector2){state->boardLayout.gridX, state->boardLayout.gridY + state->boardLayout.gridSize}, LINE_THICKNESS, GridLineOverlayColor);
-    DrawLineEx((Vector2){state->boardLayout.gridX + state->boardLayout.gridSize, state->boardLayout.gridY}, (Vector2){state->boardLayout.gridX + state->boardLayout.gridSize, state->boardLayout.gridY + state->boardLayout.gridSize}, LINE_THICKNESS, GridLineOverlayColor);
-    DrawLineEx((Vector2){state->boardLayout.gridX, state->boardLayout.gridY + state->boardLayout.gridSize}, (Vector2){state->boardLayout.gridX + state->boardLayout.gridSize, state->boardLayout.gridY + state->boardLayout.gridSize}, LINE_THICKNESS, GridLineOverlayColor);
-
     // Draw vertical lines
-    for (int i = 0; i < BOARD_SIZE; i++)
+    for (int i = 0; i < state->boardSize; i++)
     {
         DrawLineEx((Vector2){state->boardLayout.gridX + i * state->boardLayout.cellSpacing, state->boardLayout.gridY}, (Vector2){state->boardLayout.gridX + i * state->boardLayout.cellSpacing, state->boardLayout.gridY + state->boardLayout.gridSize}, LINE_THICKNESS, GridLineOverlayColor);
     }
 
     // Draw horizontal lines
-    for (int i = 0; i < BOARD_SIZE; i++)
+    for (int i = 0; i < state->boardSize; i++)
     {
         DrawLineEx((Vector2){state->boardLayout.gridX, state->boardLayout.gridY + i * state->boardLayout.cellSpacing}, (Vector2){state->boardLayout.gridX + state->boardLayout.gridSize, state->boardLayout.gridY + i * state->boardLayout.cellSpacing}, LINE_THICKNESS, GridLineOverlayColor);
     }
 
+    float radius = stoneRadius(state);
     // Draw Go stones
-    for (int x = 0; x < BOARD_SIZE; x++)
+    for (int x = 0; x < state->boardSize; x++)
     {
-        for (int y = 0; y < BOARD_SIZE; y++)
+        for (int y = 0; y < state->boardSize; y++)
         {
             Color *color = NULL;
             if (boardAt(board, x, y) == CELL_BLACK)
@@ -412,7 +584,9 @@ static void drawBoard(State *state, const CellState *board)
 
             if (color != NULL)
             {
-                DrawCircle(state->boardLayout.gridX + x * state->boardLayout.cellSpacing, state->boardLayout.gridY + y * state->boardLayout.cellSpacing, STONE_RADIUS, *color);
+                DrawCircle(state->boardLayout.gridX + x * state->boardLayout.cellSpacing,
+                           state->boardLayout.gridY + y * state->boardLayout.cellSpacing,
+                           radius, *color);
             }
         }
     }
@@ -423,13 +597,24 @@ void draw(State *state)
     BeginDrawing();
     ClearBackground(RAYWHITE);
     updateBoardLayout(state);
-    const CellState *boardToDraw = state->reviewMode ? state->historyBoards[state->reviewIndex] : state->board;
-    drawBoard(state, boardToDraw);
-    if (!state->reviewMode)
+    if (state->inNewGameMenu)
     {
-        drawGhostStone(state);
+        drawMenu(state);
     }
-    drawHud(state);
+    else
+    {
+        const CellState *boardToDraw = state->reviewMode ? state->historyBoards[state->reviewIndex] : state->board;
+        drawBoard(state, boardToDraw);
+        if (!state->reviewMode)
+        {
+            drawGhostStone(state);
+        }
+        drawHud(state);
+    }
+    if (state->savePickerActive)
+    {
+        drawSavePicker(state);
+    }
     EndDrawing();
 }
 
@@ -451,10 +636,63 @@ static void formatCoord(char *out, size_t outSize, int x, int y)
 
 static void drawHud(State *state)
 {
-    const int panelX = 16;
-    const int panelY = 16;
-    const int panelWidth = 300;
-    const int panelHeight = 190;
+    const int panelWidth = HUD_PANEL_WIDTH;
+    const int panelHeight = HUD_PANEL_HEIGHT;
+    const int margin = HUD_PANEL_MARGIN;
+    int panelX = margin;
+    int panelY = margin;
+    int screenWidth = GetScreenWidth();
+    int screenHeight = GetScreenHeight();
+    int boardX = state->boardLayout.gridX - GRID_PADDING;
+    int boardY = state->boardLayout.gridY - GRID_PADDING;
+    int boardSizePx = state->boardLayout.boardSize;
+    int rightSpace = screenWidth - (boardX + boardSizePx);
+    int leftSpace = boardX;
+    int bottomSpace = screenHeight - (boardY + boardSizePx);
+    int topSpace = boardY;
+
+    if (rightSpace >= panelWidth + margin)
+    {
+        panelX = boardX + boardSizePx + margin;
+        panelY = boardY;
+    }
+    else if (leftSpace >= panelWidth + margin)
+    {
+        panelX = boardX - panelWidth - margin;
+        panelY = boardY;
+    }
+    else if (bottomSpace >= panelHeight + margin)
+    {
+        panelX = boardX;
+        panelY = boardY + boardSizePx + margin;
+    }
+    else if (topSpace >= panelHeight + margin)
+    {
+        panelX = boardX;
+        panelY = boardY - panelHeight - margin;
+    }
+    else
+    {
+        return;
+    }
+
+    if (panelX + panelWidth + margin > screenWidth)
+    {
+        panelX = screenWidth - panelWidth - margin;
+    }
+    if (panelX < margin)
+    {
+        panelX = margin;
+    }
+    if (panelY + panelHeight + margin > screenHeight)
+    {
+        panelY = screenHeight - panelHeight - margin;
+    }
+    if (panelY < margin)
+    {
+        panelY = margin;
+    }
+
     const Color panelColor = (Color){245, 238, 223, 220};
     const Color borderColor = (Color){120, 90, 60, 200};
     const Color textColor = (Color){35, 25, 15, 255};
@@ -488,7 +726,13 @@ static void drawHud(State *state)
     DrawTextEx(state->uiFont, line, pos, fontSize, spacing, textColor);
     pos.y += fontSize + 6;
 
-    snprintf(line, sizeof(line), "File: %s", DEFAULT_SAVE_PATH);
+    const char *fileName = state->savePath;
+    const char *slash = strrchr(state->savePath, '/');
+    if (slash)
+    {
+        fileName = slash + 1;
+    }
+    snprintf(line, sizeof(line), "Save: %s", fileName && fileName[0] ? fileName : "unset");
     DrawTextEx(state->uiFont, line, pos, fontSize, spacing, textColor);
     pos.y += fontSize + 6;
 
@@ -508,7 +752,123 @@ static void drawHud(State *state)
 
     DrawTextEx(state->uiFont, "Controls: Click=play  P=pass  U=undo", pos, fontSize - 2.0f, spacing, textColor);
     pos.y += fontSize + 4;
-    DrawTextEx(state->uiFont, "R=review  Left/Right=step  S/L=save/load", pos, fontSize - 2.0f, spacing, textColor);
+    DrawTextEx(state->uiFont, "R=review  Left/Right=step  N=new", pos, fontSize - 2.0f, spacing, textColor);
+    pos.y += fontSize + 4;
+    DrawTextEx(state->uiFont, "L=load save (autosave on)", pos, fontSize - 2.0f, spacing, textColor);
+}
+
+static void drawMenu(State *state)
+{
+    int screenWidth = GetScreenWidth();
+    int screenHeight = GetScreenHeight();
+    const int panelWidth = 460;
+    const int panelHeight = 260;
+    int panelX = (screenWidth - panelWidth) / 2;
+    int panelY = (screenHeight - panelHeight) / 2;
+    const Color panelColor = (Color){245, 238, 223, 240};
+    const Color borderColor = (Color){120, 90, 60, 200};
+    const Color textColor = (Color){35, 25, 15, 255};
+    const Color highlight = (Color){200, 150, 90, 255};
+    const Color muted = (Color){70, 60, 50, 255};
+
+    DrawRectangle(panelX, panelY, panelWidth, panelHeight, panelColor);
+    DrawRectangleLines(panelX, panelY, panelWidth, panelHeight, borderColor);
+
+    float titleSize = 32.0f;
+    float bodySize = 20.0f;
+    float spacing = 1.0f;
+    Vector2 pos = {(float)panelX + 24.0f, (float)panelY + 24.0f};
+
+    DrawTextEx(state->uiFont, "New Game", pos, titleSize, spacing, textColor);
+    pos.y += titleSize + 14.0f;
+
+    DrawTextEx(state->uiFont, "Select board size", pos, bodySize, spacing, muted);
+    pos.y += bodySize + 12.0f;
+
+    for (int i = 0; i < kBoardSizeCount; i++)
+    {
+        int buttonWidth = 90;
+        int buttonHeight = 40;
+        int buttonX = panelX + 24 + i * (buttonWidth + 16);
+        int buttonY = (int)pos.y;
+        Color buttonColor = i == state->selectedBoardSizeIndex ? highlight : (Color){230, 214, 190, 255};
+        DrawRectangle(buttonX, buttonY, buttonWidth, buttonHeight, buttonColor);
+        DrawRectangleLines(buttonX, buttonY, buttonWidth, buttonHeight, borderColor);
+        char label[16];
+        snprintf(label, sizeof(label), "%dx%d", kBoardSizes[i], kBoardSizes[i]);
+        Vector2 textSize = MeasureTextEx(state->uiFont, label, bodySize, spacing);
+        DrawTextEx(state->uiFont, label,
+                   (Vector2){buttonX + (buttonWidth - textSize.x) * 0.5f, buttonY + (buttonHeight - textSize.y) * 0.5f},
+                   bodySize, spacing, textColor);
+    }
+
+    pos.y += 60.0f;
+    DrawTextEx(state->uiFont, "Left/Right or 1/2/3 to choose", pos, bodySize - 2.0f, spacing, textColor);
+    pos.y += bodySize + 6.0f;
+    DrawTextEx(state->uiFont, "Enter to start  |  L to load save", pos, bodySize - 2.0f, spacing, textColor);
+}
+
+static void drawSavePicker(State *state)
+{
+    int screenWidth = GetScreenWidth();
+    int screenHeight = GetScreenHeight();
+    const int panelWidth = 520;
+    const int panelHeight = 360;
+    int panelX = (screenWidth - panelWidth) / 2;
+    int panelY = (screenHeight - panelHeight) / 2;
+    const Color overlay = (Color){20, 15, 10, 120};
+    const Color panelColor = (Color){245, 238, 223, 245};
+    const Color borderColor = (Color){120, 90, 60, 200};
+    const Color textColor = (Color){35, 25, 15, 255};
+    const Color muted = (Color){70, 60, 50, 255};
+    const Color highlight = (Color){200, 150, 90, 255};
+
+    DrawRectangle(0, 0, screenWidth, screenHeight, overlay);
+    DrawRectangle(panelX, panelY, panelWidth, panelHeight, panelColor);
+    DrawRectangleLines(panelX, panelY, panelWidth, panelHeight, borderColor);
+
+    float titleSize = 28.0f;
+    float bodySize = 18.0f;
+    float spacing = 1.0f;
+    Vector2 pos = {(float)panelX + 20.0f, (float)panelY + 18.0f};
+
+    DrawTextEx(state->uiFont, "Load Saved Game", pos, titleSize, spacing, textColor);
+    pos.y += titleSize + 10.0f;
+
+    if (state->savePickerCount == 0)
+    {
+        DrawTextEx(state->uiFont, "No saved games found in /games", pos, bodySize, spacing, muted);
+        pos.y += bodySize + 10.0f;
+    }
+    else
+    {
+        int listX = (int)pos.x;
+        int listY = (int)pos.y;
+        int listWidth = panelWidth - 40;
+        int listHeight = panelHeight - 110;
+        int rowHeight = 24;
+        int maxRows = listHeight / rowHeight;
+        int startIndex = 0;
+        if (state->savePickerSelected >= maxRows)
+        {
+            startIndex = state->savePickerSelected - maxRows + 1;
+        }
+
+        for (int i = 0; i < maxRows && (startIndex + i) < state->savePickerCount; i++)
+        {
+            int index = startIndex + i;
+            int rowY = listY + i * rowHeight;
+            if (index == state->savePickerSelected)
+            {
+                DrawRectangle(listX, rowY, listWidth, rowHeight, highlight);
+            }
+
+            DrawTextEx(state->uiFont, state->saveEntries[index].name, (Vector2){(float)listX + 6.0f, (float)rowY + 3.0f}, bodySize, spacing, textColor);
+        }
+    }
+
+    Vector2 footer = {(float)panelX + 20.0f, (float)panelY + panelHeight - 32.0f};
+    DrawTextEx(state->uiFont, "Up/Down to select  Enter to load  Esc to close", footer, bodySize - 2.0f, spacing, textColor);
 }
 
 static void drawGhostStone(State *state)
@@ -535,18 +895,126 @@ static void drawGhostStone(State *state)
 
     DrawCircle(state->boardLayout.gridX + boardX * state->boardLayout.cellSpacing,
                state->boardLayout.gridY + boardY * state->boardLayout.cellSpacing,
-               STONE_RADIUS, ghostColor);
+               stoneRadius(state), ghostColor);
+}
+
+static float stoneRadius(const State *state)
+{
+    float radius = state->boardLayout.cellSpacing * 0.45f;
+    float maxRadius = state->boardLayout.cellSpacing * 0.5f - 2.0f;
+    if (maxRadius < 3.0f)
+    {
+        maxRadius = 3.0f;
+    }
+    if (radius > maxRadius)
+    {
+        radius = maxRadius;
+    }
+    if (radius < 3.0f)
+    {
+        radius = 3.0f;
+    }
+
+    return radius;
+}
+
+static int boardSizeIndexFor(int size)
+{
+    for (int i = 0; i < kBoardSizeCount; i++)
+    {
+        if (kBoardSizes[i] == size)
+        {
+            return i;
+        }
+    }
+    return 0;
+}
+
+static void refreshSavePicker(State *state)
+{
+    state->savePickerCount = 0;
+    state->savePickerSelected = 0;
+
+    DIR *dir = opendir(SAVE_DIR);
+    if (!dir)
+    {
+        return;
+    }
+
+    struct dirent *entry = NULL;
+    while ((entry = readdir(dir)) != NULL)
+    {
+        if (state->savePickerCount >= MAX_SAVE_ENTRIES)
+        {
+            break;
+        }
+
+        const char *name = entry->d_name;
+        size_t len = strlen(name);
+        if (len < 4 || strcmp(name + len - 4, ".sgf") != 0)
+        {
+            continue;
+        }
+
+        char path[256];
+        snprintf(path, sizeof(path), "%s/%s", SAVE_DIR, name);
+        struct stat st = {0};
+        if (stat(path, &st) != 0)
+        {
+            continue;
+        }
+        if (!S_ISREG(st.st_mode))
+        {
+            continue;
+        }
+
+        SaveEntry *slot = &state->saveEntries[state->savePickerCount];
+        snprintf(slot->path, sizeof(slot->path), "%s", path);
+        snprintf(slot->name, sizeof(slot->name), "%s", name);
+        slot->mtime = (uint64_t)st.st_mtime;
+        state->savePickerCount++;
+    }
+
+    closedir(dir);
+
+    if (state->savePickerCount > 1)
+    {
+        qsort(state->saveEntries, (size_t)state->savePickerCount, sizeof(SaveEntry), compareSaveEntries);
+    }
+}
+
+static int compareSaveEntries(const void *a, const void *b)
+{
+    const SaveEntry *left = (const SaveEntry *)a;
+    const SaveEntry *right = (const SaveEntry *)b;
+    if (left->mtime == right->mtime)
+    {
+        return strcmp(left->name, right->name);
+    }
+    return left->mtime > right->mtime ? -1 : 1;
+}
+
+static void openSavePicker(State *state)
+{
+    refreshSavePicker(state);
+    state->savePickerActive = true;
+}
+
+static void closeSavePicker(State *state)
+{
+    state->savePickerActive = false;
 }
 
 static bool saveGame(const State *state, const char *path)
 {
+    ensureSaveDirectory();
     FILE *file = fopen(path, "w");
     if (!file)
     {
         return false;
     }
 
-    fprintf(file, "(;GM[1]FF[4]SZ[%d]KM[6.5]AP[game-of-go]\n", BOARD_SIZE);
+    fprintf(file, "(;GM[1]FF[4]SZ[%d]KM[6.5]AP[game-of-go]\n", state->boardSize);
     int movesOnLine = 0;
     for (int i = 0; i < state->actionCount; i++)
     {
@@ -603,6 +1071,10 @@ static bool loadGame(State *state, const char *path)
         return false;
     }
 
+    bool success = false;
+    bool previousAutoSave = state->autoSaveEnabled;
+    char *data = NULL;
+
     fseek(file, 0, SEEK_END);
     long length = ftell(file);
     fseek(file, 0, SEEK_SET);
@@ -612,7 +1084,7 @@ static bool loadGame(State *state, const char *path)
         return false;
     }
 
-    char *data = malloc((size_t)length + 1);
+    data = malloc((size_t)length + 1);
     if (!data)
     {
         fclose(file);
@@ -623,14 +1095,24 @@ static bool loadGame(State *state, const char *path)
     fclose(file);
     data[readBytes] = '\0';
 
-    int sizeFromFile = BOARD_SIZE;
-    if (parseBoardSize(data, &sizeFromFile) && sizeFromFile != BOARD_SIZE)
+    int sizeFromFile = state->boardSize;
+    if (parseBoardSize(data, &sizeFromFile))
     {
-        free(data);
-        return false;
+        if (sizeFromFile > BOARD_MAX_SIZE)
+        {
+            goto cleanup;
+        }
+        state->boardSize = sizeFromFile;
+        state->selectedBoardSizeIndex = boardSizeIndexFor(sizeFromFile);
+        updateBoardLayout(state);
     }
 
+    state->autoSaveEnabled = false;
     resetGame(state);
+    if (path && path[0] != '\0')
+    {
+        snprintf(state->savePath, sizeof(state->savePath), "%s", path);
+    }
     const char *cursor = data;
     while ((cursor = strchr(cursor, ';')) != NULL)
     {
@@ -656,32 +1138,39 @@ static bool loadGame(State *state, const char *path)
             const char *end = strchr(cursor, ']');
             if (!end)
             {
-                break;
+                goto cleanup;
             }
             cursor = end;
 
-            if (!isPass && (!isInBounds(x, y)))
+            if (!isPass && (!isInBounds(state, x, y)))
             {
-                free(data);
-                return false;
+                goto cleanup;
             }
 
             if (!applyMove(state, x, y, player, isPass))
             {
-                free(data);
-                return false;
+                goto cleanup;
             }
         }
     }
 
     state->reviewMode = false;
     state->reviewIndex = state->actionCount;
-    free(data);
-    return true;
+    state->inNewGameMenu = false;
+    success = true;
+
+cleanup:
+    state->autoSaveEnabled = previousAutoSave;
+    if (data)
+    {
+        free(data);
+    }
+    return success;
 }
 
+
 static unsigned int countLiberties(State *state, int x, int y) {
-    if (!isInBounds(x, y))
+    if (!isInBounds(state, x, y))
     {
         return 0;
     }
@@ -698,7 +1187,7 @@ static unsigned int countLiberties(State *state, int x, int y) {
     int stackY[NUM_CELLS];
     int stackSize = 0;
 
-    int startIndex = y * BOARD_SIZE + x;
+    int startIndex = BOARD_INDEX(x, y);
     visited[startIndex] = true;
     stackX[stackSize] = x;
     stackY[stackSize] = y;
@@ -716,12 +1205,12 @@ static unsigned int countLiberties(State *state, int x, int y) {
         {
             int nx = cx + offsets[i][0];
             int ny = cy + offsets[i][1];
-            if (!isInBounds(nx, ny))
+            if (!isInBounds(state, nx, ny))
             {
                 continue;
             }
 
-            int nIndex = ny * BOARD_SIZE + nx;
+            int nIndex = BOARD_INDEX(nx, ny);
             CellState neighbor = BOARD_GET(state, nx, ny);
             if (neighbor == CELL_EMPTY)
             {
@@ -750,7 +1239,7 @@ static unsigned int countLiberties(State *state, int x, int y) {
 
 static unsigned int floodFill(State *state, CellState scratchpad[NUM_CELLS], int x, int y)
 { 
-    if (!isInBounds(x, y))
+    if (!isInBounds(state, x, y))
     {
         return 0;
     }
@@ -761,7 +1250,7 @@ static unsigned int floodFill(State *state, CellState scratchpad[NUM_CELLS], int
         return 0;
     }
 
-    int startIndex = y * BOARD_SIZE + x;
+    int startIndex = BOARD_INDEX(x, y);
     if (scratchpad[startIndex] == color)
     {
         return 0;
@@ -783,7 +1272,7 @@ static unsigned int floodFill(State *state, CellState scratchpad[NUM_CELLS], int
         stackSize--;
         int cx = stackX[stackSize];
         int cy = stackY[stackSize];
-        int cIndex = cy * BOARD_SIZE + cx;
+        int cIndex = BOARD_INDEX(cx, cy);
 
         scratchpad[cIndex] = color;
         filled++;
@@ -793,12 +1282,12 @@ static unsigned int floodFill(State *state, CellState scratchpad[NUM_CELLS], int
         {
             int nx = cx + offsets[i][0];
             int ny = cy + offsets[i][1];
-            if (!isInBounds(nx, ny))
+            if (!isInBounds(state, nx, ny))
             {
                 continue;
             }
 
-            int nIndex = ny * BOARD_SIZE + nx;
+            int nIndex = BOARD_INDEX(nx, ny);
             if (visited[nIndex])
             {
                 continue;
@@ -823,7 +1312,7 @@ bool shouldRemoveStones(State *state,
                         CellState scratchpad[NUM_CELLS], int targetX,
                         int targetY)
 {
-    if (!isInBounds(targetX, targetY))
+    if (!isInBounds(state, targetX, targetY))
     {
         return false;
     }
@@ -842,7 +1331,7 @@ bool shouldRemoveStones(State *state,
     {
         int nx = targetX + offsets[i][0];
         int ny = targetY + offsets[i][1];
-        if (!isInBounds(nx, ny))
+        if (!isInBounds(state, nx, ny))
         {
             continue;
         }
